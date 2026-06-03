@@ -6,11 +6,17 @@ local AIMBOT_CONFIG = {
     WallCheck = true
 }
 
+local AIMBOTV2_CONFIG = {
+    FOV = 300,
+    Cooldown = 0.1,
+    AimPart = "Head",
+    HighlightColor = Color3.fromRGB(180, 0, 255)
+}
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 
@@ -20,9 +26,33 @@ local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 local camera = Workspace.CurrentCamera
 
 local aimbotEnabled = false
+local aimbotV2Enabled = false
 local espEnabled = false
 local espFolder = nil
 local lastShotTime = 0
+local lastAttackV2 = 0
+local v2Target = nil
+local v2Connection = nil
+local targetHighlight = nil
+
+local projectileRemote = nil
+local checkShotRemote = nil
+local finishRemote = nil
+
+local function findRemotes()
+    local function search(name)
+        for _, v in pairs(ReplicatedStorage:GetDescendants()) do
+            if v:IsA("RemoteEvent") and v.Name:lower():find(name:lower()) then
+                return v
+            end
+        end
+        return nil
+    end
+    projectileRemote = search("ProjectileRender") or ReplicatedStorage.ModuleScripts.GunModules.Remote.ProjectileRender
+    checkShotRemote = localPlayer.ClientRemotes and localPlayer.ClientRemotes.CheckShot
+    finishRemote = search("ProjectileFinished") or ReplicatedStorage.ModuleScripts.GunModules.Remote.ProjectileFinished
+end
+findRemotes()
 
 local function createESPFolder()
     if espFolder then espFolder:Destroy() end
@@ -188,8 +218,8 @@ local function stopESP()
     end
 end
 
-local function raycastVisibility(origin, targetPosition)
-    if not AIMBOT_CONFIG.WallCheck then return true end
+local function raycastVisibility(origin, targetPosition, wallCheck)
+    if not wallCheck then return true end
     local direction = targetPosition - origin
     local distance = direction.Magnitude
     if distance == 0 then return false end
@@ -200,7 +230,7 @@ local function raycastVisibility(origin, targetPosition)
     return result == nil
 end
 
-local function getBestTarget()
+local function getBestTarget(config)
     local bestTarget = nil
     local bestScore = math.huge
     local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -213,7 +243,7 @@ local function getBestTarget()
         if not humanoid or humanoid.Health <= 0 then continue end
 
         local targetPart = nil
-        for _, partName in ipairs(AIMBOT_CONFIG.AimPartPriority) do
+        for _, partName in ipairs(config.AimPartPriority) do
             local part = char:FindFirstChild(partName)
             if part then
                 targetPart = part
@@ -225,10 +255,10 @@ local function getBestTarget()
         local screenPosition, onScreen = camera:WorldToScreenPoint(targetPart.Position)
         if not onScreen then continue end
         local distanceFromCenter = (Vector2.new(screenPosition.X, screenPosition.Y) - screenCenter).Magnitude
-        if distanceFromCenter > AIMBOT_CONFIG.FOV_Radius then continue end
+        if distanceFromCenter > config.FOV_Radius then continue end
 
         local gunPos = humanoidRootPart.Position + Vector3.new(0, 1.5, 0)
-        if not raycastVisibility(gunPos, targetPart.Position) then continue end
+        if not raycastVisibility(gunPos, targetPart.Position, config.WallCheck) then continue end
 
         local score = distanceFromCenter
         if score < bestScore then
@@ -244,7 +274,7 @@ local function getBestTarget()
     return bestTarget
 end
 
-local function predictTargetPosition(targetPart, targetRoot, humanoid)
+local function predictTargetPosition(targetPart, targetRoot, humanoid, multiplier)
     local velocity = Vector3.zero
     if humanoid and humanoid.MoveDirection.Magnitude > 0 then
         velocity = humanoid.MoveDirection * humanoid.WalkSpeed
@@ -252,12 +282,12 @@ local function predictTargetPosition(targetPart, targetRoot, humanoid)
         velocity = targetRoot.AssemblyLinearVelocity
     end
     local ping = Players:GetNetworkPing() or 0.1
-    local predictionTime = math.min(ping * AIMBOT_CONFIG.PredictionMultiplier, 0.5)
+    local predictionTime = math.min(ping * multiplier, 0.5)
     return targetPart.Position + velocity * predictionTime
 end
 
 local function fireAimbot()
-    local target = getBestTarget()
+    local target = getBestTarget(AIMBOT_CONFIG)
     if not target then return end
     local targetPart = target.Part
     local targetRoot = target.RootPart
@@ -266,8 +296,8 @@ local function fireAimbot()
     if targetHumanoid.Health <= 0 then return end
 
     local gunPosition = humanoidRootPart.Position + Vector3.new(0, 1.5, 0)
-    local predictedPos = predictTargetPosition(targetPart, targetRoot, targetHumanoid)
-    if not raycastVisibility(gunPosition, predictedPos) then
+    local predictedPos = predictTargetPosition(targetPart, targetRoot, targetHumanoid, AIMBOT_CONFIG.PredictionMultiplier)
+    if not raycastVisibility(gunPosition, predictedPos, AIMBOT_CONFIG.WallCheck) then
         predictedPos = targetPart.Position
     end
 
@@ -289,47 +319,195 @@ local function fireAimbot()
         }
     }
     pcall(function()
-        ReplicatedStorage.ModuleScripts.GunModules.Remote.ProjectileRender:FireServer(unpack(projectileArgs))
+        projectileRemote:FireServer(unpack(projectileArgs))
     end)
 
     task.wait(0.05)
 
-    local checkShotArgs = {
-        0, 0, 1, 0.8,
-        CFrame.lookAt(gunPosition, predictedPos),
-        gunPosition,
-        targetPart,
-        11,
-        currentTime
-    }
-    pcall(function()
-        localPlayer.ClientRemotes.CheckShot:FireServer(unpack(checkShotArgs))
-    end)
+    if checkShotRemote then
+        local checkShotArgs = {
+            0, 0, 1, 0.8,
+            CFrame.lookAt(gunPosition, predictedPos),
+            gunPosition,
+            targetPart,
+            11,
+            currentTime
+        }
+        pcall(function()
+            checkShotRemote:FireServer(unpack(checkShotArgs))
+        end)
+    end
 
-    local finishArgs = {
+    if finishRemote then
+        local finishArgs = {
+            {
+                Index = currentTime,
+                Origin = gunPosition,
+                CFrame = CFrame.lookAt(predictedPos, gunPosition),
+                ExpRadius = 15,
+                LaserColor = Color3.new(0, 1, 1),
+                LaserSpeed = 10,
+                LaserTime = 0.7,
+                Effect = "GibT",
+                ExpColor = Color3.new(1, 0.6, 0.2),
+                LaserTexture = "rbxassetid://4813348676",
+                Explosive = false,
+                HitPlayer = true,
+                IsLaser = false,
+                LaserWidth = 3,
+                ExpSound = "rbxassetid://2814354338",
+                LaserLength = 5,
+                LaserEmission = 1
+            }
+        }
+        pcall(function()
+            finishRemote:FireServer(unpack(finishArgs))
+        end)
+    end
+end
+
+local function updateTargetHighlight()
+    if targetHighlight then
+        targetHighlight:Destroy()
+        targetHighlight = nil
+    end
+    if v2Target and v2Target.Character then
+        local humanoid = v2Target.Character:FindFirstChild("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            targetHighlight = Instance.new("Highlight")
+            targetHighlight.Name = "TargetHighlight"
+            targetHighlight.FillColor = AIMBOTV2_CONFIG.HighlightColor
+            targetHighlight.FillTransparency = 0.5
+            targetHighlight.OutlineColor = AIMBOTV2_CONFIG.HighlightColor
+            targetHighlight.OutlineTransparency = 0
+            targetHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            targetHighlight.Parent = v2Target.Character
+        end
+    end
+end
+
+local function getClosestInFOV()
+    local best = nil
+    local bestDistance = math.huge
+    local center = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= localPlayer and p.Character and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+            local head = p.Character:FindFirstChild(AIMBOTV2_CONFIG.AimPart) or p.Character:FindFirstChild("Head")
+            if head then
+                local sp, onScreen = camera:WorldToScreenPoint(head.Position)
+                if onScreen then
+                    local screenDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if screenDist <= AIMBOTV2_CONFIG.FOV then
+                        local realDistance = (humanoidRootPart.Position - head.Position).Magnitude
+                        if realDistance < bestDistance then
+                            bestDistance = realDistance
+                            best = p
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function fireGunAttack(targetPlayer)
+    local targetHead = targetPlayer.Character and targetPlayer.Character:FindFirstChild("Head")
+    if not targetHead then return end
+
+    local gunPosition = humanoidRootPart.Position + Vector3.new(0, 1.5, 0)
+    local predictedPos = targetHead.Position
+
+    local currentTime = tick()
+    local projectileArgs = {
         {
+            Type = "Bullet",
             Index = currentTime,
             Origin = gunPosition,
-            CFrame = CFrame.lookAt(predictedPos, gunPosition),
-            ExpRadius = 15,
-            LaserColor = Color3.new(0, 1, 1),
-            LaserSpeed = 10,
-            LaserTime = 0.7,
-            Effect = "GibT",
-            ExpColor = Color3.new(1, 0.6, 0.2),
-            LaserTexture = "rbxassetid://4813348676",
-            Explosive = false,
-            HitPlayer = true,
-            IsLaser = false,
-            LaserWidth = 3,
-            ExpSound = "rbxassetid://2814354338",
-            LaserLength = 5,
-            LaserEmission = 1
+            Owner = character,
+            Endpoint = predictedPos,
+            Life = 5,
+            Force = 130,
+            Gravity = 0,
+            Wind = Vector3.zero
         }
     }
     pcall(function()
-        ReplicatedStorage.ModuleScripts.GunModules.Remote.ProjectileFinished:FireServer(unpack(finishArgs))
+        projectileRemote:FireServer(unpack(projectileArgs))
     end)
+
+    task.wait(0.05)
+
+    if checkShotRemote then
+        local checkShotArgs = {
+            0, 0, 1, 0.8,
+            CFrame.lookAt(gunPosition, predictedPos),
+            gunPosition,
+            targetHead,
+            11,
+            currentTime
+        }
+        pcall(function()
+            checkShotRemote:FireServer(unpack(checkShotArgs))
+        end)
+    end
+
+    if finishRemote then
+        local finishArgs = {
+            {
+                Index = currentTime,
+                Origin = gunPosition,
+                CFrame = CFrame.lookAt(predictedPos, gunPosition),
+                ExpRadius = 15,
+                LaserColor = Color3.new(0, 1, 1),
+                LaserSpeed = 10,
+                LaserTime = 0.7,
+                Effect = "GibT",
+                ExpColor = Color3.new(1, 0.6, 0.2),
+                LaserTexture = "rbxassetid://4813348676",
+                Explosive = false,
+                HitPlayer = true,
+                IsLaser = false,
+                LaserWidth = 3,
+                ExpSound = "rbxassetid://2814354338",
+                LaserLength = 5,
+                LaserEmission = 1
+            }
+        }
+        pcall(function()
+            finishRemote:FireServer(unpack(finishArgs))
+        end)
+    end
+end
+
+local function onAimbotV2Update()
+    if not aimbotV2Enabled then
+        if v2Connection then
+            v2Connection:Disconnect()
+            v2Connection = nil
+        end
+        if targetHighlight then
+            targetHighlight:Destroy()
+            targetHighlight = nil
+        end
+        v2Target = nil
+        return
+    end
+
+    if not v2Target or not v2Target.Character or v2Target.Character.Humanoid.Health <= 0 then
+        v2Target = getClosestInFOV()
+        updateTargetHighlight()
+    end
+
+    if v2Target and tick() - lastAttackV2 >= AIMBOTV2_CONFIG.Cooldown then
+        local targetHead = v2Target.Character and v2Target.Character:FindFirstChild("Head")
+        if targetHead then
+            camera.CFrame = CFrame.new(camera.CFrame.Position, targetHead.Position)
+        end
+        fireGunAttack(v2Target)
+        lastAttackV2 = tick()
+    end
 end
 
 local function createUI()
@@ -341,8 +519,8 @@ local function createUI()
 
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 140, 0, 100)
-    mainFrame.Position = UDim2.new(1, -150, 0.5, -50)
+    mainFrame.Size = UDim2.new(0, 150, 0, 135)
+    mainFrame.Position = UDim2.new(1, -160, 0.5, -67)
     mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     mainFrame.BackgroundTransparency = 0.2
     mainFrame.BorderSizePixel = 0
@@ -397,156 +575,4 @@ local function createUI()
     minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     minimizeButton.TextSize = 18
     minimizeButton.Font = Enum.Font.GothamBold
-    minimizeButton.Parent = titleBar
-
-    local buttonsFrame = Instance.new("Frame")
-    buttonsFrame.Size = UDim2.new(1, -20, 1, -35)
-    buttonsFrame.Position = UDim2.new(0, 10, 0, 30)
-    buttonsFrame.BackgroundTransparency = 1
-    buttonsFrame.Parent = mainFrame
-
-    local aimbotButton = Instance.new("TextButton")
-    aimbotButton.Name = "AimbotButton"
-    aimbotButton.Size = UDim2.new(1, 0, 0, 30)
-    aimbotButton.Position = UDim2.new(0, 0, 0, 5)
-    aimbotButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    aimbotButton.Text = "AIMBOT: OFF"
-    aimbotButton.TextColor3 = Color3.fromRGB(255, 100, 100)
-    aimbotButton.TextSize = 12
-    aimbotButton.Font = Enum.Font.GothamBold
-    aimbotButton.BorderSizePixel = 0
-    aimbotButton.Parent = buttonsFrame
-    local aimbotCorner = Instance.new("UICorner")
-    aimbotCorner.CornerRadius = UDim.new(0, 8)
-    aimbotCorner.Parent = aimbotButton
-
-    local espButton = Instance.new("TextButton")
-    espButton.Name = "ESPButton"
-    espButton.Size = UDim2.new(1, 0, 0, 30)
-    espButton.Position = UDim2.new(0, 0, 0, 40)
-    espButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    espButton.Text = "ESP: OFF"
-    espButton.TextColor3 = Color3.fromRGB(255, 100, 100)
-    espButton.TextSize = 12
-    espButton.Font = Enum.Font.GothamBold
-    espButton.BorderSizePixel = 0
-    espButton.Parent = buttonsFrame
-    local espCorner = Instance.new("UICorner")
-    espCorner.CornerRadius = UDim.new(0, 8)
-    espCorner.Parent = espButton
-
-    local minimized = false
-    local dragging = false
-    local dragStart, startPos
-
-    local function updateButton(button, enabled, text)
-        if enabled then
-            button.Text = text .. ": ON"
-            button.TextColor3 = Color3.fromRGB(100, 255, 100)
-            local grad = button:FindFirstChild("Gradient")
-            if not grad then
-                grad = Instance.new("UIGradient")
-                grad.Name = "Gradient"
-                grad.Color = ColorSequence.new({
-                    ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 255)),
-                    ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 150))
-                })
-                grad.Rotation = 90
-                grad.Parent = button
-            end
-        else
-            button.Text = text .. ": OFF"
-            button.TextColor3 = Color3.fromRGB(255, 100, 100)
-            local grad = button:FindFirstChild("Gradient")
-            if grad then grad:Destroy() end
-        end
-    end
-
-    aimbotButton.MouseButton1Click:Connect(function()
-        aimbotEnabled = not aimbotEnabled
-        updateButton(aimbotButton, aimbotEnabled, "AIMBOT")
-    end)
-
-    espButton.MouseButton1Click:Connect(function()
-        espEnabled = not espEnabled
-        updateButton(espButton, espEnabled, "ESP")
-        if espEnabled then startESP() else stopESP() end
-    end)
-
-    closeButton.MouseButton1Click:Connect(function()
-        stopESP()
-        screenGui:Destroy()
-    end)
-
-    minimizeButton.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        if minimized then
-            TweenService:Create(buttonsFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
-                Size = UDim2.new(1, -20, 0, 0)
-            }):Play()
-            TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
-                Size = UDim2.new(0, 140, 0, 25)
-            }):Play()
-        else
-            TweenService:Create(buttonsFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
-                Size = UDim2.new(1, -20, 1, -35)
-            }):Play()
-            TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
-                Size = UDim2.new(0, 140, 0, 100)
-            }):Play()
-        end
-    end)
-
-    titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = mainFrame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then dragging = false end
-            end)
-        end
-    end)
-
-    titleBar.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
-            local delta = input.Position - dragStart
-            local newPos = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
-            local clampedX = math.clamp(newPos.X.Offset, 0, camera.ViewportSize.X - mainFrame.AbsoluteSize.X)
-            local clampedY = math.clamp(newPos.Y.Offset, 0, camera.ViewportSize.Y - mainFrame.AbsoluteSize.Y)
-            mainFrame.Position = UDim2.new(0, clampedX, 0, clampedY)
-        end
-    end)
-
-    return screenGui
-end
-
-createUI()
-
-localPlayer.CharacterAdded:Connect(function(newChar)
-    character = newChar
-    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-end)
-
-Players.PlayerAdded:Connect(function(player)
-    if espEnabled and player ~= localPlayer then
-        createESPForPlayer(player)
-    end
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    if espEnabled then removeESPForPlayer(player) end
-end)
-
-RunService.RenderStepped:Connect(function()
-    if aimbotEnabled then
-        if tick() - lastShotTime >= AIMBOT_CONFIG.Cooldown then
-            fireAimbot()
-        end
-    end
-end)
+   
