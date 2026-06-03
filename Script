@@ -1,3 +1,4 @@
+
 local AIMBOT_CONFIG = {
     FOV_Radius = 200,
     PredictionMultiplier = 1.5,
@@ -575,4 +576,176 @@ local function createUI()
     minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     minimizeButton.TextSize = 18
     minimizeButton.Font = Enum.Font.GothamBold
-   
+    minimizeButton.Parent = titleBar
+
+    local buttonsFrame = Instance.new("Frame")
+    buttonsFrame.Size = UDim2.new(1, -20, 1, -35)
+    buttonsFrame.Position = UDim2.new(0, 10, 0, 30)
+    buttonsFrame.BackgroundTransparency = 1
+    buttonsFrame.Parent = mainFrame
+
+    local function makeButton(name, yPos)
+        local btn = Instance.new("TextButton")
+        btn.Name = name .. "Button"
+        btn.Size = UDim2.new(1, 0, 0, 30)
+        btn.Position = UDim2.new(0, 0, 0, yPos)
+        btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        btn.Text = name .. ": OFF"
+        btn.TextColor3 = Color3.fromRGB(255, 100, 100)
+        btn.TextSize = 12
+        btn.Font = Enum.Font.GothamBold
+        btn.BorderSizePixel = 0
+        btn.Parent = buttonsFrame
+        local cr = Instance.new("UICorner")
+        cr.CornerRadius = UDim.new(0, 8)
+        cr.Parent = btn
+        return btn
+    end
+
+    local aimbotButton = makeButton("AIMBOT", 5)
+    local aimbotV2Button = makeButton("AIMBOT V2", 38)
+    local espButton = makeButton("ESP", 71)
+
+    local minimized = false
+    local dragging = false
+    local dragStart, startPos
+
+    local function updateButton(button, enabled, text)
+        if enabled then
+            button.Text = text .. ": ON"
+            button.TextColor3 = Color3.fromRGB(100, 255, 100)
+            local grad = button:FindFirstChild("Gradient")
+            if not grad then
+                grad = Instance.new("UIGradient")
+                grad.Name = "Gradient"
+                grad.Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 255)),
+                    ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 150))
+                })
+                grad.Rotation = 90
+                grad.Parent = button
+            end
+        else
+            button.Text = text .. ": OFF"
+            button.TextColor3 = Color3.fromRGB(255, 100, 100)
+            local grad = button:FindFirstChild("Gradient")
+            if grad then grad:Destroy() end
+        end
+    end
+
+    aimbotButton.MouseButton1Click:Connect(function()
+        aimbotEnabled = not aimbotEnabled
+        updateButton(aimbotButton, aimbotEnabled, "AIMBOT")
+    end)
+
+    aimbotV2Button.MouseButton1Click:Connect(function()
+        aimbotV2Enabled = not aimbotV2Enabled
+        updateButton(aimbotV2Button, aimbotV2Enabled, "AIMBOT V2")
+        if aimbotV2Enabled then
+            if v2Connection then v2Connection:Disconnect() end
+            v2Connection = RunService.RenderStepped:Connect(onAimbotV2Update)
+        else
+            if v2Connection then
+                v2Connection:Disconnect()
+                v2Connection = nil
+            end
+            if targetHighlight then
+                targetHighlight:Destroy()
+                targetHighlight = nil
+            end
+            v2Target = nil
+        end
+    end)
+
+    espButton.MouseButton1Click:Connect(function()
+        espEnabled = not espEnabled
+        updateButton(espButton, espEnabled, "ESP")
+        if espEnabled then startESP() else stopESP() end
+    end)
+
+    closeButton.MouseButton1Click:Connect(function()
+        stopESP()
+        aimbotV2Enabled = false
+        if v2Connection then
+            v2Connection:Disconnect()
+            v2Connection = nil
+        end
+        if targetHighlight then
+            targetHighlight:Destroy()
+            targetHighlight = nil
+        end
+        screenGui:Destroy()
+    end)
+
+    minimizeButton.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            TweenService:Create(buttonsFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Size = UDim2.new(1, -20, 0, 0)
+            }):Play()
+            TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Size = UDim2.new(0, 150, 0, 25)
+            }):Play()
+        else
+            TweenService:Create(buttonsFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Size = UDim2.new(1, -20, 1, -35)
+            }):Play()
+            TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Size = UDim2.new(0, 150, 0, 135)
+            }):Play()
+        end
+    end)
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+
+    titleBar.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local delta = input.Position - dragStart
+            local newPos = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+            local clampedX = math.clamp(newPos.X.Offset, 0, camera.ViewportSize.X - mainFrame.AbsoluteSize.X)
+            local clampedY = math.clamp(newPos.Y.Offset, 0, camera.ViewportSize.Y - mainFrame.AbsoluteSize.Y)
+            mainFrame.Position = UDim2.new(0, clampedX, 0, clampedY)
+        end
+    end)
+
+    return screenGui
+end
+
+createUI()
+
+localPlayer.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    if espEnabled and player ~= localPlayer then
+        createESPForPlayer(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if espEnabled then removeESPForPlayer(player) end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if aimbotEnabled then
+        if tick() - lastShotTime >= AIMBOT_CONFIG.Cooldown then
+            fireAimbot()
+        end
+    end
+end)
