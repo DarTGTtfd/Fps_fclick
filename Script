@@ -551,7 +551,7 @@ local function createUI()
     local titleLabel = Instance.new("TextLabel")
     titleLabel.Size = UDim2.new(1, 0, 1, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "Script Keyless"
+    titleLabel.Text = "Octo Hub Aimbot"
     titleLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
     titleLabel.TextSize = 14
     titleLabel.Font = Enum.Font.GothamBold
